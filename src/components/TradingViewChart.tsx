@@ -557,6 +557,7 @@ export default function TradingViewChart({
           }
         }
 
+        /* 
         for (const bsp of patterns.bsp_list) {
           const ts = getTimeByKluIdx(idxToTime, bsp.klu_idx, bsp.time);
           if (ts == null || bsp.price == null) continue;
@@ -581,6 +582,7 @@ export default function TradingViewChart({
             saveShapeId(shapeId);
           } catch {}
         }
+        */
 
         await drawLadderLines(
           patterns.yellow_upper,
