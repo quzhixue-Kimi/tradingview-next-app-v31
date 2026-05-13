@@ -363,7 +363,7 @@ export class CustomDatafeed {
       ticker: cleanSymbol,
       description: `${cleanSymbol} US Stock`,
       type: "stock",
-      session: "0930-1600",
+      session: "0930-1630",
       exchange: "US",
       listed_exchange: "US",
       timezone: "America/New_York",
