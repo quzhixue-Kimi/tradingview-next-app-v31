@@ -195,25 +195,37 @@ function isLadderPointArray(input: any): input is LadderPoint[] {
 
 function extractIndicatorsPayload(raw: any): any {
   if (!raw || typeof raw !== "object") return null;
+
   if (raw.data && typeof raw.data === "object") return raw.data;
   return raw;
 }
 
+function pickArray<T = any>(...candidates: any[]): T[] {
+  for (const candidate of candidates) {
+    if (Array.isArray(candidate)) return candidate as T[];
+  }
+  return [];
+}
+
 function extractLadderLines(payload: any): LadderLines {
-  const candidates = [
+  const sources = [
     payload,
     payload?.ladder,
     payload?.ladder_lines,
+    payload?.ladderLines,
     payload?.indicators,
+    payload?.indicators?.ladder,
+    payload?.indicators?.ladder_lines,
+    payload?.data,
   ];
 
-  for (const source of candidates) {
+  for (const source of sources) {
     if (!source || typeof source !== "object") continue;
 
-    const blueUpper = source.blue_upper;
-    const blueLower = source.blue_lower;
-    const yellowUpper = source.yellow_upper;
-    const yellowLower = source.yellow_lower;
+    const blueUpper = source.blue_upper ?? source.blueUpper;
+    const blueLower = source.blue_lower ?? source.blueLower;
+    const yellowUpper = source.yellow_upper ?? source.yellowUpper;
+    const yellowLower = source.yellow_lower ?? source.yellowLower;
 
     if (
       isLadderPointArray(blueUpper) ||
@@ -239,26 +251,27 @@ function extractLadderLines(payload: any): LadderLines {
 }
 
 function extractTd9Labels(payload: any) {
-  const candidates = [
+  return pickArray(
     payload?.td9_labels,
+    payload?.td9Labels,
     payload?.indicators?.td9_labels,
+    payload?.indicators?.td9Labels,
     payload?.data?.td9_labels,
-  ];
+    payload?.data?.td9Labels,
+  );
+}
 
-  for (const candidate of candidates) {
-    if (Array.isArray(candidate)) {
-      return candidate;
-    }
-  }
-
-  return [];
+function normalizeSymbolInput(symbolName: string): string {
+  const raw = symbolName.trim().toUpperCase();
+  if (!raw) return "";
+  return raw.split(":")[0].split(".")[0];
 }
 
 function buildBackendCode(symbolInfo: LibrarySymbolInfo): string {
-  if (symbolInfo.full_name && symbolInfo.full_name.includes(":")) {
-    return symbolInfo.full_name;
-  }
-  return `${symbolInfo.name}:US`;
+  const cleanSymbol = normalizeSymbolInput(
+    symbolInfo.ticker || symbolInfo.name || symbolInfo.full_name || "",
+  );
+  return `${cleanSymbol}:US`;
 }
 
 function toBarTimeMs(timeStr: string, resolution: string): number {
@@ -269,12 +282,6 @@ function toBarTimeMs(timeStr: string, resolution: string): number {
   }
 
   return parseTimeToUnix(timeStr) * 1000;
-}
-
-function normalizeSymbolInput(symbolName: string): string {
-  const raw = symbolName.trim().toUpperCase();
-  if (!raw) return "";
-  return raw.includes(":") ? raw.split(":")[0] : raw;
 }
 
 export class CustomDatafeed {
@@ -323,11 +330,6 @@ export class CustomDatafeed {
   ): void {
     const query = normalizeSymbolInput(userInput);
 
-    console.log("[Datafeed] searchSymbols called", {
-      userInput,
-      normalized: query,
-    });
-
     if (!query) {
       setTimeout(() => onResult([]), 0);
       return;
@@ -336,7 +338,7 @@ export class CustomDatafeed {
     const items: SearchSymbolResultItem[] = [
       {
         symbol: query,
-        full_name: `${query}:US`,
+        full_name: query,
         description: `${query} US Stock`,
         exchange: "US",
         ticker: query,
@@ -345,7 +347,6 @@ export class CustomDatafeed {
     ];
 
     setTimeout(() => {
-      console.log("[Datafeed] searchSymbols result", items);
       onResult(items);
     }, 0);
   }
@@ -359,7 +360,7 @@ export class CustomDatafeed {
 
     const symbolInfo: LibrarySymbolInfo = {
       name: cleanSymbol,
-      full_name: `${cleanSymbol}:US`,
+      full_name: cleanSymbol,
       ticker: cleanSymbol,
       description: `${cleanSymbol} US Stock`,
       type: "stock",
@@ -377,11 +378,6 @@ export class CustomDatafeed {
       volume_precision: 0,
     };
 
-    console.log("[Datafeed] resolveSymbol called", {
-      symbolName,
-      symbolInfo,
-    });
-
     setTimeout(() => {
       onResolve(symbolInfo);
     }, 0);
@@ -395,12 +391,6 @@ export class CustomDatafeed {
     onError: ErrorCallback,
   ): Promise<void> {
     const { from, to, countBack } = periodParams;
-
-    console.log("[Datafeed] getBars called", {
-      symbol: symbolInfo.name,
-      resolution,
-      backendCode: buildBackendCode(symbolInfo),
-    });
 
     try {
       const level = mapResolutionToLevel(resolution);
@@ -465,6 +455,14 @@ export class CustomDatafeed {
           if (Array.isArray(indTd9) && indTd9.length > 0) {
             combinedTd9List = indTd9;
           }
+
+          console.log("[Datafeed] indicators parsed", {
+            td9: combinedTd9List.length,
+            blueUpper: combinedLadderLines.blue_upper.length,
+            blueLower: combinedLadderLines.blue_lower.length,
+            yellowUpper: combinedLadderLines.yellow_upper.length,
+            yellowLower: combinedLadderLines.yellow_lower.length,
+          });
         }
       } catch (e) {
         console.log("[Datafeed] indicators fetch failed", e);

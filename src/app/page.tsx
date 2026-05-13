@@ -3,11 +3,6 @@
 import { useEffect, useState } from "react";
 import TradingViewChart from "@/components/TradingViewChart";
 
-declare global {
-  interface Window {
-    TradingView?: unknown;
-  }
-}
 
 export default function Page() {
   const [tvReady, setTvReady] = useState(false);

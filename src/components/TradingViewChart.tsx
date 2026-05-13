@@ -309,7 +309,7 @@ export default function TradingViewChart({
         container: containerEl,
         datafeed: datafeedRef.current!,
         interval: initialInterval,
-        symbol: initialSymbol,
+        symbol: initialSymbol.toUpperCase(),
         library_path: "/charting_library/",
         locale: "en",
         fullscreen: false,
@@ -582,39 +582,6 @@ export default function TradingViewChart({
           } catch {}
         }
 
-        const labels = patterns.td9_labels || [];
-        for (const lb of labels) {
-          const ts = normalizeShapeTime(lb.time);
-          if (ts == null || lb.price == null || !lb.text) continue;
-
-          const absPrice = Math.abs(lb.price) || 1;
-          const offsetAmount = Math.max(absPrice * 0.005, 0.01);
-          const pricePoint =
-            lb.position === "above"
-              ? lb.price + offsetAmount
-              : lb.price - offsetAmount;
-
-          try {
-            const shapeId = chart.createShape(
-              { time: ts as any, price: pricePoint },
-              {
-                shape: "text",
-                text: lb.text,
-                lock: true,
-                disableSelection: true,
-                disableSave: true,
-                disableUndo: true,
-                overrides: {
-                  textColor: lb.color || "#ff00ff",
-                  color: lb.color || "#ff00ff",
-                  fontsize: 12,
-                },
-              },
-            );
-            saveShapeId(shapeId);
-          } catch {}
-        }
-
         await drawLadderLines(
           patterns.yellow_upper,
           patterns.yellow_lower,
@@ -662,7 +629,11 @@ export default function TradingViewChart({
         clearDrawings();
         datafeedRef.current?.clearCache();
 
-        const newSymbol = chart.symbol();
+        const newSymbol = chart
+          .symbol()
+          .toUpperCase()
+          .split(":")[0]
+          .split(".")[0];
         if (onSymbolChange) {
           onSymbolChange(newSymbol);
         }
