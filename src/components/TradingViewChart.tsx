@@ -10,6 +10,8 @@ import CustomDatafeed, {
 import { parseTimeToUnix } from "@/lib/utils";
 
 const TV_CONTAINER_ID = "tv_chart_container";
+const TD9_BSP_STUDY_NAME = "TD9 Labels BSP List";
+const STUDY_POLL_MS = 800;
 
 declare global {
   interface Window {
@@ -35,6 +37,7 @@ declare global {
     overrides?: Record<string, any>;
     debug?: boolean;
     symbol_search_request_delay?: number;
+    custom_indicators_getter?: (PineJS: any) => Promise<any[]>;
   }
 
   interface TradingViewWidget {
@@ -53,11 +56,16 @@ declare global {
     symbol(): string;
     resolution(): string;
     getVisibleRange?: () => { from: number; to: number } | null;
-    createStudy?: (...args: any[]) => any;
+    createStudy?: (...args: any[]) => Promise<any> | any;
     createShape(point: any, options?: any): any;
     createMultipointShape?: (points: any[], options?: any) => any;
     removeEntity?: (entityId: string | number) => void;
     removeShape?: (shapeId: string | number) => void;
+    getAllStudies?: () => Array<{
+      id?: string | number;
+      name?: string;
+      description?: string;
+    }>;
   }
 }
 
@@ -66,6 +74,14 @@ type DrawnShapeId = string | number;
 interface LadderPoint {
   time: string;
   value: number;
+}
+
+interface Td9Label {
+  time: string;
+  price: number;
+  text: string;
+  position?: string;
+  color?: string;
 }
 
 interface ChanPatterns {
@@ -77,13 +93,7 @@ interface ChanPatterns {
   blue_lower?: LadderPoint[];
   yellow_upper?: LadderPoint[];
   yellow_lower?: LadderPoint[];
-  td9_labels?: Array<{
-    time: string;
-    price: number;
-    text: string;
-    position?: string;
-    color?: string;
-  }>;
+  td9_labels?: Td9Label[];
 }
 
 type TvPoint = {
@@ -258,6 +268,60 @@ function splitPolylineSegments(points: TvPoint[]): TvPoint[][] {
   return segments.filter((seg) => seg.length >= 2);
 }
 
+function buildTd9BspIndicator(PineJS: any) {
+  return {
+    name: TD9_BSP_STUDY_NAME,
+    metainfo: {
+      _metainfoVersion: 53,
+      id: "td9_bsp@tv-basicstudies-1",
+      description: TD9_BSP_STUDY_NAME,
+      shortDescription: TD9_BSP_STUDY_NAME,
+      isCustomIndicator: true,
+      is_price_study: true,
+      is_hidden_study: false,
+      isTVScript: false,
+      isTVScriptStub: false,
+      format: {
+        type: "inherit",
+      },
+      plots: [
+        {
+          id: "plot_0",
+          type: "line",
+        },
+      ],
+      styles: {
+        plot_0: {
+          title: TD9_BSP_STUDY_NAME,
+          histogramBase: 0,
+        },
+      },
+      defaults: {
+        styles: {
+          plot_0: {
+            linestyle: 0,
+            linewidth: 1,
+            plottype: 2,
+            trackPrice: false,
+            transparency: 100,
+            visible: false,
+            color: "#000000",
+          },
+        },
+        precision: 2,
+        inputs: {},
+      },
+      inputs: [],
+    },
+    constructor: function (this: any) {
+      this.main = function (context: any) {
+        const close = PineJS.Std.close(context);
+        return [close];
+      };
+    },
+  };
+}
+
 export default function TradingViewChart({
   initialSymbol,
   initialInterval,
@@ -270,7 +334,11 @@ export default function TradingViewChart({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const widgetRef = useRef<TradingViewWidget | null>(null);
   const datafeedRef = useRef<CustomDatafeed | null>(null);
-  const drawnShapeIdsRef = useRef<DrawnShapeId[]>([]);
+
+  const baseShapeIdsRef = useRef<DrawnShapeId[]>([]);
+  const td9BspShapeIdsRef = useRef<DrawnShapeId[]>([]);
+  const td9BspEnabledRef = useRef(false);
+
   const widgetIdRef = useRef(0);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -278,6 +346,8 @@ export default function TradingViewChart({
     widgetIdRef.current += 1;
     const thisWidgetId = widgetIdRef.current;
     let isMounted = true;
+    let pollTimer: number | null = null;
+    let cancelDraw: (() => void) | null = null;
 
     if (typeof window === "undefined") return;
     if (!window.TradingView?.widget) return;
@@ -302,7 +372,6 @@ export default function TradingViewChart({
     }
 
     let widget: TradingViewWidget | null = null;
-    let cancelDraw: (() => void) | null = null;
 
     try {
       widget = new window.TradingView.widget({
@@ -327,6 +396,9 @@ export default function TradingViewChart({
         },
         symbol_search_request_delay: 0,
         debug: true,
+        custom_indicators_getter: async (PineJS: any) => {
+          return [buildTd9BspIndicator(PineJS)];
+        },
       });
 
       widgetRef.current = widget;
@@ -352,7 +424,7 @@ export default function TradingViewChart({
           try {
             await cht.createStudy?.(
               "Moving Average",
-              false,
+              true,
               false,
               {
                 length,
@@ -364,7 +436,7 @@ export default function TradingViewChart({
               },
             );
           } catch (e) {
-            console.log("[MA Study] failed", { length, error: e });
+            console.error("[MA Study] failed", { length, error: e });
           }
         };
 
@@ -377,8 +449,8 @@ export default function TradingViewChart({
 
       void createMaStudies(chart);
 
-      const clearDrawings = () => {
-        const ids = drawnShapeIdsRef.current;
+      const clearShapes = (idsRef: React.MutableRefObject<DrawnShapeId[]>) => {
+        const ids = idsRef.current;
         if (!ids.length) return;
 
         ids.forEach((id) => {
@@ -391,12 +463,15 @@ export default function TradingViewChart({
           } catch {}
         });
 
-        drawnShapeIdsRef.current = [];
+        idsRef.current = [];
       };
 
-      const saveShapeId = (id: any) => {
+      const saveShapeId = (
+        idsRef: React.MutableRefObject<DrawnShapeId[]>,
+        id: any,
+      ) => {
         if (id !== undefined && id !== null) {
-          drawnShapeIdsRef.current.push(id as DrawnShapeId);
+          idsRef.current.push(id as DrawnShapeId);
         }
       };
 
@@ -432,7 +507,7 @@ export default function TradingViewChart({
                   linewidth: lineWidth,
                 },
               });
-              saveShapeId(shapeId);
+              saveShapeId(baseShapeIdsRef, shapeId);
             } catch {}
           }
         }
@@ -469,8 +544,8 @@ export default function TradingViewChart({
         await drawTrendSegments(lower, color, 3);
       };
 
-      const drawPatterns = async () => {
-        clearDrawings();
+      const drawBasePatterns = async () => {
+        clearShapes(baseShapeIdsRef);
 
         const patterns = datafeedRef.current?.getChanPatterns();
         if (!patterns) return;
@@ -512,7 +587,7 @@ export default function TradingViewChart({
                   linewidth: 2,
                 },
               });
-              saveShapeId(shapeId);
+              saveShapeId(baseShapeIdsRef, shapeId);
             } catch {}
           }
         }
@@ -552,18 +627,38 @@ export default function TradingViewChart({
                   },
                 },
               );
-              saveShapeId(shapeId);
+              saveShapeId(baseShapeIdsRef, shapeId);
             } catch {}
           }
         }
 
-        /* 
-        for (const bsp of patterns.bsp_list) {
+        await drawLadderLines(
+          patterns.yellow_upper,
+          patterns.yellow_lower,
+          "#f0b90b",
+        );
+
+        await drawLadderLines(
+          patterns.blue_upper,
+          patterns.blue_lower,
+          "#2962ff",
+        );
+      };
+
+      const drawTd9BspOverlay = async () => {
+        clearShapes(td9BspShapeIdsRef);
+
+        const patterns = datafeedRef.current?.getChanPatterns();
+        if (!patterns) return;
+
+        const idxToTime = buildIdxToTimeMap(patterns.raw_kline_list);
+
+        for (const bsp of patterns.bsp_list || []) {
           const ts = getTimeByKluIdx(idxToTime, bsp.klu_idx, bsp.time);
           if (ts == null || bsp.price == null) continue;
 
           try {
-            const shapeId = chart.createShape(
+            const shapeId = await chart.createShape(
               { time: ts as any, price: bsp.price },
               {
                 shape: bsp.is_buy ? "arrow_up" : "arrow_down",
@@ -579,25 +674,76 @@ export default function TradingViewChart({
                 },
               },
             );
-            saveShapeId(shapeId);
-          } catch {}
+            saveShapeId(td9BspShapeIdsRef, shapeId);
+          } catch (e) {
+            console.error("[td9_bsp] draw bsp failed", e);
+          }
         }
-        */
 
-        await drawLadderLines(
-          patterns.yellow_upper,
-          patterns.yellow_lower,
-          "#f0b90b",
-        );
+        for (const label of patterns.td9_labels || []) {
+          const ts = normalizeShapeTime(label.time);
+          if (ts == null || label.price == null || !label.text) continue;
 
-        await drawLadderLines(
-          patterns.blue_upper,
-          patterns.blue_lower,
-          "#2962ff",
-        );
+          const isAbove = (label.position || "").toLowerCase() === "above";
+          const color = label.color || (isAbove ? "#FF00FF" : "#00aa00");
+
+          try {
+            const shapeId = await chart.createShape(
+              { time: ts as any, price: label.price },
+              {
+                shape: "text",
+                text: String(label.text),
+                lock: true,
+                disableSelection: true,
+                disableSave: true,
+                disableUndo: true,
+                overrides: {
+                  color,
+                  textColor: color,
+                  fontsize: 14,
+                  bold: true,
+                  vertAlign: isAbove ? "top" : "bottom",
+                },
+              },
+            );
+            saveShapeId(td9BspShapeIdsRef, shapeId);
+          } catch (e) {
+            console.error("[td9_bsp] draw td9 failed", e);
+          }
+        }
       };
 
-      const safeDrawPatterns = () => {
+      const hasTd9BspStudy = (): boolean => {
+        const studies = chart.getAllStudies?.() ?? [];
+        return studies.some((item) => {
+          const name = String(
+            item.name || item.description || "",
+          ).toLowerCase();
+          return name.includes(TD9_BSP_STUDY_NAME.toLowerCase());
+        });
+      };
+
+      const refreshOverlayByStudyState = async (forceRedraw = false) => {
+        const enabled = hasTd9BspStudy();
+
+        if (enabled !== td9BspEnabledRef.current) {
+          td9BspEnabledRef.current = enabled;
+        }
+
+        if (!enabled) {
+          clearShapes(td9BspShapeIdsRef);
+          return;
+        }
+
+        if (
+          enabled &&
+          (forceRedraw || td9BspShapeIdsRef.current.length === 0)
+        ) {
+          await drawTd9BspOverlay();
+        }
+      };
+
+      const safeRefreshAll = () => {
         let cancelled = false;
 
         const attempt = async (retries: number) => {
@@ -606,9 +752,10 @@ export default function TradingViewChart({
           }
 
           try {
-            await drawPatterns();
+            await drawBasePatterns();
+            await refreshOverlayByStudyState(true);
           } catch (err) {
-            console.error("[TradingView] drawPatterns failed", err);
+            console.error("[TradingView] refresh failed", err);
             if (retries > 0 && !cancelled) {
               setTimeout(() => void attempt(retries - 1), 300);
             }
@@ -624,11 +771,12 @@ export default function TradingViewChart({
 
       datafeedRef.current?.setOnDataLoadedCallback(() => {
         if (cancelDraw) cancelDraw();
-        cancelDraw = safeDrawPatterns();
+        cancelDraw = safeRefreshAll();
       });
 
       chart.onSymbolChanged().subscribe(null, () => {
-        clearDrawings();
+        clearShapes(baseShapeIdsRef);
+        clearShapes(td9BspShapeIdsRef);
         datafeedRef.current?.clearCache();
 
         const newSymbol = chart
@@ -636,6 +784,7 @@ export default function TradingViewChart({
           .toUpperCase()
           .split(":")[0]
           .split(".")[0];
+
         if (onSymbolChange) {
           onSymbolChange(newSymbol);
         }
@@ -643,14 +792,27 @@ export default function TradingViewChart({
 
       if (typeof chart.onIntervalChanged === "function") {
         chart.onIntervalChanged().subscribe(null, () => {
-          clearDrawings();
+          clearShapes(baseShapeIdsRef);
+          clearShapes(td9BspShapeIdsRef);
           datafeedRef.current?.clearCache();
         });
       }
+
+      pollTimer = window.setInterval(() => {
+        void refreshOverlayByStudyState(false);
+      }, STUDY_POLL_MS);
     });
 
     return () => {
       isMounted = false;
+
+      if (pollTimer != null) {
+        window.clearInterval(pollTimer);
+      }
+
+      if (cancelDraw) {
+        cancelDraw();
+      }
 
       const currentWidget = widgetRef.current;
       widgetRef.current = null;
@@ -661,37 +823,34 @@ export default function TradingViewChart({
         } catch {}
       }
 
-      drawnShapeIdsRef.current = [];
+      baseShapeIdsRef.current = [];
+      td9BspShapeIdsRef.current = [];
+      td9BspEnabledRef.current = false;
     };
   }, [initialSymbol, initialInterval, onSymbolChange]);
 
   return (
-    <div style={{ width: "100%", height: "100%", position: "relative" }}>
+    <div
+      className="relative h-full w-full"
+      style={{ width: "100%", height: "100%", minHeight: 0, minWidth: 0 }}
+    >
       {isLoading && (
         <div
           style={{
             position: "absolute",
             inset: 0,
+            zIndex: 10,
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            background: "#131722",
-            color: "#d1d4dc",
-            zIndex: 2,
-            fontFamily:
-              "-apple-system, BlinkMacSystemFont, Trebuchet MS, Roboto, Ubuntu, sans-serif",
-            fontSize: 14,
+            background: "rgba(0,0,0,0.4)",
+            color: "#fff",
           }}
         >
           Loading chart...
         </div>
       )}
-
-      <div
-        id={TV_CONTAINER_ID}
-        ref={containerRef}
-        style={{ width: "100%", height: "100%" }}
-      />
+      <div ref={containerRef} style={{ width: "100%", height: "100%" }} />
     </div>
   );
 }
