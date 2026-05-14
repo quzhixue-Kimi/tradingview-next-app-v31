@@ -605,9 +605,12 @@ export default function TradingViewChart({
                 overrides: {
                   fillBackground: true,
                   backgroundColor,
-                  linecolor: color,
-                  linewidth: 0,
+                  color,
+                  linewidth: 1,
                   transparency: 85,
+                  "middleLine.showLine": true,
+                  "middleLine.lineColor": color,
+                  "middleLine.lineWidth": 1,
                 },
               },
             );
