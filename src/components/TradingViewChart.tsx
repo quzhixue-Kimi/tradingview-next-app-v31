@@ -443,7 +443,7 @@ export default function TradingViewChart({
         await addMA(55, "rgb(239, 49, 49)", 1);
         await addMA(60, "rgb(255, 255, 255)", 1);
         await addMA(65, "rgb(102, 187, 106)", 1);
-        await addMA(120, "rgb(180, 44, 194)", 2);
+        await addMA(120, "rgb(180, 44, 194)", 3);
         await addMA(250, "rgb(187, 17, 1)", 4);
       };
 
@@ -540,8 +540,87 @@ export default function TradingViewChart({
           200,
         );
 
-        await drawTrendSegments(upper, color, 3);
-        await drawTrendSegments(lower, color, 3);
+        await drawTrendSegments(upper, color, 2);
+        await drawTrendSegments(lower, color, 2);
+      };
+
+      // Fill ladder area between upper and lower lines with semi‑transparent color
+      const drawLadderFill = async (
+        upperRaw: LadderPoint[] | undefined,
+        lowerRaw: LadderPoint[] | undefined,
+        color: string,
+      ) => {
+        const visibleRange = chart.getVisibleRange?.() ?? null;
+
+        const upper = downsamplePoints(
+          dedupeByTime(
+            filterVisibleTvPoints(
+              normalizeLadderPoints(upperRaw),
+              visibleRange,
+            ),
+          ),
+          100,
+        );
+
+        const lower = downsamplePoints(
+          dedupeByTime(
+            filterVisibleTvPoints(
+              normalizeLadderPoints(lowerRaw),
+              visibleRange,
+            ),
+          ),
+          100,
+        );
+
+        if (upper.length === 0 || lower.length === 0) return;
+
+        const backgroundColor =
+          color === "#f0b90b"
+            ? "rgba(240,185,11,0.2)"
+            : color === "#2962ff"
+              ? "rgba(41,98,255,0.2)"
+              : "rgba(0,0,0,0.2)";
+
+        const rectCount = Math.min(upper.length, lower.length);
+        console.debug("[drawLadderFill] rect fill", {
+          upperCount: upper.length,
+          lowerCount: lower.length,
+          rectCount,
+          sampleUpper: upper.slice(0, 3),
+          sampleLower: lower.slice(0, 3),
+        });
+
+        for (let i = 0; i < rectCount; i++) {
+          const topLeft = upper[i];
+          const bottomRight = lower[i];
+          try {
+            const shapeId = await chart.createMultipointShape?.(
+              [topLeft, bottomRight],
+              {
+                shape: "rectangle",
+                lock: true,
+                disableSelection: true,
+                disableSave: true,
+                disableUndo: true,
+                overrides: {
+                  fillBackground: true,
+                  backgroundColor,
+                  linecolor: color,
+                  linewidth: 0,
+                  transparency: 85,
+                },
+              },
+            );
+            if (shapeId !== undefined && shapeId !== null) {
+              saveShapeId(baseShapeIdsRef, shapeId);
+            }
+          } catch (rectErr: any) {
+            console.error(
+              "[drawLadderFill] rectangle creation failed",
+              rectErr,
+            );
+          }
+        }
       };
 
       const drawBasePatterns = async () => {
@@ -637,8 +716,20 @@ export default function TradingViewChart({
           patterns.yellow_lower,
           "#f0b90b",
         );
+        // Fill yellow ladder area with semi‑transparent color
+        await drawLadderFill(
+          patterns.yellow_upper,
+          patterns.yellow_lower,
+          "#f0b90b",
+        );
 
         await drawLadderLines(
+          patterns.blue_upper,
+          patterns.blue_lower,
+          "#2962ff",
+        );
+        // Fill blue ladder area with semi‑transparent color
+        await drawLadderFill(
           patterns.blue_upper,
           patterns.blue_lower,
           "#2962ff",
